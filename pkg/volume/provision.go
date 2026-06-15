@@ -78,7 +78,7 @@ const (
 
 // NewNFSProvisioner creates a Provisioner that provisions NFS PVs backed by
 // the given directory.
-func NewNFSProvisioner(exportDir string, client kubernetes.Interface, outOfCluster bool, useGanesha bool, ganeshaConfig string, enableXfsQuota bool, serverHostname string, maxExports int, exportSubnet string) controller.Provisioner {
+func NewNFSProvisioner(exportDir string, client kubernetes.Interface, outOfCluster bool, useGanesha bool, ganeshaConfig string, enableXfsQuota bool, serverHostname string, maxExports int, exportSubnet string, enableNFSv3 bool) controller.Provisioner {
 	var exp exporter
 	if useGanesha {
 		exp = newGaneshaExporter(ganeshaConfig)
@@ -95,10 +95,10 @@ func NewNFSProvisioner(exportDir string, client kubernetes.Interface, outOfClust
 	} else {
 		quotaer = newDummyQuotaer()
 	}
-	return newNFSProvisionerInternal(exportDir, client, outOfCluster, exp, quotaer, serverHostname, maxExports, exportSubnet)
+	return newNFSProvisionerInternal(exportDir, client, outOfCluster, exp, quotaer, serverHostname, maxExports, exportSubnet, enableNFSv3)
 }
 
-func newNFSProvisionerInternal(exportDir string, client kubernetes.Interface, outOfCluster bool, exporter exporter, quotaer quotaer, serverHostname string, maxExports int, exportSubnet string) *nfsProvisioner {
+func newNFSProvisionerInternal(exportDir string, client kubernetes.Interface, outOfCluster bool, exporter exporter, quotaer quotaer, serverHostname string, maxExports int, exportSubnet string, enableNFSv3 bool) *nfsProvisioner {
 	if _, err := os.Stat(exportDir); os.IsNotExist(err) {
 		glog.Fatalf("exportDir %s does not exist!", exportDir)
 	}
@@ -128,6 +128,7 @@ func newNFSProvisionerInternal(exportDir string, client kubernetes.Interface, ou
 		serverHostname: serverHostname,
 		maxExports:     maxExports,
 		exportSubnet:   exportSubnet,
+		enableNFSv3:    enableNFSv3,
 		identity:       identity,
 		podIPEnv:       podIPEnv,
 		serviceEnv:     serviceEnv,
@@ -165,6 +166,14 @@ type nfsProvisioner struct {
 
 	// Subnet for NFS export to allow mount only from
 	exportSubnet string
+
+	// Whether the NFS server exposes the NFSv3 protocol and its ancillary
+	// services (rpcbind, statd, mountd, nlockmgr, rquotad). When false the
+	// server is NFSv4-only: only port 2049/TCP is required, so the Service may
+	// be trimmed to that single port. When resolving the server IP from its own
+	// Service, getServer validates the Service endpoints against this reduced
+	// port set instead of the full v3 set.
+	enableNFSv3 bool
 
 	// Identity of this nfsProvisioner, generated & persisted to exportDir or
 	// recovered from there. Used to mark provisioned PVs
@@ -403,19 +412,24 @@ func (p *nfsProvisioner) getServer() (string, error) {
 		port     int32
 		protocol v1.Protocol
 	}
+	// When NFSv3 is disabled the server is NFSv4-only and the Service is
+	// expected to expose just the single 2049/TCP data port; validating against
+	// the full v3 port set would reject that trimmed (but valid) Service.
 	expectedPorts := map[endpointPort]bool{
-		{2049, v1.ProtocolTCP}:  true,
-		{2049, v1.ProtocolUDP}:  true,
-		{32803, v1.ProtocolTCP}: true,
-		{32803, v1.ProtocolUDP}: true,
-		{20048, v1.ProtocolTCP}: true,
-		{20048, v1.ProtocolUDP}: true,
-		{875, v1.ProtocolTCP}:   true,
-		{875, v1.ProtocolUDP}:   true,
-		{111, v1.ProtocolTCP}:   true,
-		{111, v1.ProtocolUDP}:   true,
-		{662, v1.ProtocolTCP}:   true,
-		{662, v1.ProtocolUDP}:   true,
+		{2049, v1.ProtocolTCP}: true,
+	}
+	if p.enableNFSv3 {
+		expectedPorts[endpointPort{2049, v1.ProtocolUDP}] = true
+		expectedPorts[endpointPort{32803, v1.ProtocolTCP}] = true
+		expectedPorts[endpointPort{32803, v1.ProtocolUDP}] = true
+		expectedPorts[endpointPort{20048, v1.ProtocolTCP}] = true
+		expectedPorts[endpointPort{20048, v1.ProtocolUDP}] = true
+		expectedPorts[endpointPort{875, v1.ProtocolTCP}] = true
+		expectedPorts[endpointPort{875, v1.ProtocolUDP}] = true
+		expectedPorts[endpointPort{111, v1.ProtocolTCP}] = true
+		expectedPorts[endpointPort{111, v1.ProtocolUDP}] = true
+		expectedPorts[endpointPort{662, v1.ProtocolTCP}] = true
+		expectedPorts[endpointPort{662, v1.ProtocolUDP}] = true
 	}
 	endpoints, err := p.client.CoreV1().Endpoints(namespace).Get(serviceName, metav1.GetOptions{})
 	if err != nil {

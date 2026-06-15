@@ -219,7 +219,7 @@ func TestCreateVolume(t *testing.T) {
 		config:    conf,
 	}
 	maxExports := 3
-	p := newNFSProvisionerInternal(tmpDir+"/", client, false, exporter, newDummyQuotaer(), "", maxExports, "*")
+	p := newNFSProvisionerInternal(tmpDir+"/", client, false, exporter, newDummyQuotaer(), "", maxExports, "*", true)
 
 	for _, test := range tests {
 		os.Setenv(test.envKey, "1.1.1.1")
@@ -414,7 +414,7 @@ func TestValidateOptions(t *testing.T) {
 	}
 
 	client := fake.NewSimpleClientset()
-	p := newNFSProvisionerInternal(tmpDir+"/", client, false, &testExporter{}, newDummyQuotaer(), "", -1, "*")
+	p := newNFSProvisionerInternal(tmpDir+"/", client, false, &testExporter{}, newDummyQuotaer(), "", -1, "*", true)
 
 	for _, test := range tests {
 		gid, rootSquash, _, err := p.validateOptions(test.options)
@@ -473,7 +473,7 @@ func evaluateExportTests(t *testing.T, output string, checker func(*nfsProvision
 	}
 	for _, test := range tests {
 		client := fake.NewSimpleClientset()
-		p := newNFSProvisionerInternal(tmpDir+"/", client, false, &testExporter{exportMap: &exportMap{exportIDs: test.exportIDs}}, newDummyQuotaer(), "", test.maxExports, "*")
+		p := newNFSProvisionerInternal(tmpDir+"/", client, false, &testExporter{exportMap: &exportMap{exportIDs: test.exportIDs}}, newDummyQuotaer(), "", test.maxExports, "*", true)
 		ok := checker(p)
 		evaluate(t, test.name, test.expectError, nil, test.expectedResult, ok, output)
 	}
@@ -529,7 +529,7 @@ func TestCreateDirectory(t *testing.T) {
 	}
 
 	client := fake.NewSimpleClientset()
-	p := newNFSProvisionerInternal(tmpDir+"/", client, false, &testExporter{}, newDummyQuotaer(), "", -1, "*")
+	p := newNFSProvisionerInternal(tmpDir+"/", client, false, &testExporter{}, newDummyQuotaer(), "", -1, "*", true)
 
 	for _, test := range tests {
 		path := p.exportDir + test.directory
@@ -656,6 +656,7 @@ func TestGetServer(t *testing.T) {
 		node           string
 		serverHostname string
 		outOfCluster   bool
+		nfsV4Only      bool
 		expectedServer string
 		expectError    bool
 	}{
@@ -884,6 +885,65 @@ func TestGetServer(t *testing.T) {
 			expectedServer: "foo",
 			expectError:    false,
 		},
+		{
+			name: "nfsv4-only, service trimmed to 2049/TCP only, should be valid",
+			objs: []runtime.Object{
+				newService("foo", "1.1.1.1"),
+				newEndpoints("foo", []string{"2.2.2.2"}, []endpointPort{
+					{2049, v1.ProtocolTCP},
+				}),
+			},
+			podIP:          "2.2.2.2",
+			service:        "foo",
+			namespace:      "default",
+			node:           "",
+			nfsV4Only:      true,
+			expectedServer: "1.1.1.1",
+			expectError:    false,
+		},
+		{
+			name: "nfsv4-only, but service still exposes full v3 port set, should be invalid",
+			objs: []runtime.Object{
+				newService("foo", "1.1.1.1"),
+				newEndpoints("foo", []string{"2.2.2.2"}, []endpointPort{
+					{2049, v1.ProtocolTCP},
+					{2049, v1.ProtocolUDP},
+					{32803, v1.ProtocolTCP},
+					{32803, v1.ProtocolUDP},
+					{20048, v1.ProtocolTCP},
+					{20048, v1.ProtocolUDP},
+					{875, v1.ProtocolTCP},
+					{875, v1.ProtocolUDP},
+					{111, v1.ProtocolTCP},
+					{111, v1.ProtocolUDP},
+					{662, v1.ProtocolTCP},
+					{662, v1.ProtocolUDP},
+				}),
+			},
+			podIP:          "2.2.2.2",
+			service:        "foo",
+			namespace:      "default",
+			node:           "",
+			nfsV4Only:      true,
+			expectedServer: "",
+			expectError:    true,
+		},
+		{
+			name: "nfsv3 enabled, but service trimmed to 2049/TCP only, should be invalid",
+			objs: []runtime.Object{
+				newService("foo", "1.1.1.1"),
+				newEndpoints("foo", []string{"2.2.2.2"}, []endpointPort{
+					{2049, v1.ProtocolTCP},
+				}),
+			},
+			podIP:          "2.2.2.2",
+			service:        "foo",
+			namespace:      "default",
+			node:           "",
+			nfsV4Only:      false,
+			expectedServer: "",
+			expectError:    true,
+		},
 	}
 	for _, test := range tests {
 		if test.podIP != "" {
@@ -900,7 +960,7 @@ func TestGetServer(t *testing.T) {
 		}
 
 		client := fake.NewSimpleClientset(test.objs...)
-		p := newNFSProvisionerInternal(tmpDir+"/", client, test.outOfCluster, &testExporter{}, newDummyQuotaer(), test.serverHostname, -1, "*")
+		p := newNFSProvisionerInternal(tmpDir+"/", client, test.outOfCluster, &testExporter{}, newDummyQuotaer(), test.serverHostname, -1, "*", !test.nfsV4Only)
 
 		server, err := p.getServer()
 

@@ -74,23 +74,29 @@ NFSV4
 
 // Setup sets up various prerequisites and settings for the server. If an error
 // is encountered at any point it returns it instantly
-func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool) error {
-	// Start rpcbind if it is not started yet
-	cmd := exec.Command("/usr/sbin/rpcinfo", "127.0.0.1")
-	if err := cmd.Run(); err != nil {
-		cmd = exec.Command("/usr/sbin/rpcbind", "-w")
+func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool, enableNFSv3 bool) error {
+	// rpcbind (portmapper) and rpc.statd (NSM, for NLM locking) only serve
+	// NFSv3 and its ancillary protocols. NFSv4 multiplexes everything over
+	// 2049 and needs neither, so skip them when NFSv3 is disabled to avoid
+	// listening on the v3 ports at all.
+	if enableNFSv3 {
+		// Start rpcbind if it is not started yet
+		cmd := exec.Command("/usr/sbin/rpcinfo", "127.0.0.1")
+		if err := cmd.Run(); err != nil {
+			cmd = exec.Command("/usr/sbin/rpcbind", "-w")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("Starting rpcbind failed with error: %v, output: %s", err, out)
+			}
+		}
+
+		cmd = exec.Command("/usr/sbin/rpc.statd", "--port", "662")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("Starting rpcbind failed with error: %v, output: %s", err, out)
+			return fmt.Errorf("rpc.statd failed with error: %v, output: %s", err, out)
 		}
 	}
 
-	cmd = exec.Command("/usr/sbin/rpc.statd", "--port", "662")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("rpc.statd failed with error: %v, output: %s", err, out)
-	}
-
 	// Start dbus, needed for ganesha dynamic exports
-	cmd = exec.Command("dbus-daemon", "--system", "--nopidfile")
+	cmd := exec.Command("dbus-daemon", "--system", "--nopidfile")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("dbus-daemon failed with error: %v, output: %s", err, out)
 	}
@@ -115,9 +121,11 @@ func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool) error {
 	if err != nil {
 		return fmt.Errorf("error setting fsid device to ganesha config: %v", err)
 	}
-	err = setNlmPort(ganeshaConfig)
-	if err != nil {
-		return fmt.Errorf("error setting NLM port to ganesha config: %v", err)
+	if enableNFSv3 {
+		err = setNlmPort(ganeshaConfig)
+		if err != nil {
+			return fmt.Errorf("error setting NLM port to ganesha config: %v", err)
+		}
 	}
 
 	return nil

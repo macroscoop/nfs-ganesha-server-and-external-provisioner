@@ -17,6 +17,7 @@ spec:
       {{- if (and (eq .Values.service.type "NodePort") (not (empty .Values.service.nfsNodePort))) }}
       nodePort: {{ .Values.service.nfsNodePort }}
       {{- end }}
+    {{- if .Values.nfsV3.enabled }}
     - port: {{ .Values.service.nfsPort }}
       targetPort: nfs-udp
       protocol: UDP
@@ -94,6 +95,7 @@ spec:
       {{- if (and (eq .Values.service.type "NodePort") (not (empty .Values.service.statdPort))) }}
       nodePort: {{ .Values.service.statdNodePort }}
       {{- end }}
+    {{- end }}
   {{- with .Values.service.clusterIP }}
   clusterIP: {{ . }}
   {{- end }}

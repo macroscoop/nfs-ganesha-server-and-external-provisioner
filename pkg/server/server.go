@@ -75,25 +75,20 @@ NFSV4
 // Setup sets up various prerequisites and settings for the server. If an error
 // is encountered at any point it returns it instantly
 func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool, enableNFSv3 bool) error {
-	// rpcbind (the RPC portmapper) is required by ganesha even for an
-	// NFSv4-only server: ganesha registers every RPC program it serves
-	// (including NFS_V4 itself and RQUOTA) with the local portmapper at
-	// startup, and a registration failure is fatal. So always start it.
-	//
-	// Start rpcbind if it is not started yet
-	cmd := exec.Command("/usr/sbin/rpcinfo", "127.0.0.1")
-	if err := cmd.Run(); err != nil {
-		cmd = exec.Command("/usr/sbin/rpcbind", "-w")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("Starting rpcbind failed with error: %v, output: %s", err, out)
-		}
-	}
-
-	// rpc.statd (NSM) only serves NFSv3's NLM locking, so skip it when
-	// NFSv3 is disabled. Combined with NFS_Protocols=4 in the ganesha
-	// config (see setNFSProtocols), the server then exposes no v3/NLM/mount
-	// RPC services at all, only NFSv4 over 2049.
+	// rpcbind and rpc.statd only serve NFSv3 and its ancillary RPC programs.
+	// For NFSv4-only mode we skip both and pin ganesha to v4 with no UDP
+	// listeners and no RQUOTA (see setNFSProtocols), so ganesha never contacts
+	// the portmapper and clients need only 2049/TCP.
 	if enableNFSv3 {
+		// Start rpcbind if it is not started yet
+		cmd := exec.Command("/usr/sbin/rpcinfo", "127.0.0.1")
+		if err := cmd.Run(); err != nil {
+			cmd = exec.Command("/usr/sbin/rpcbind", "-w")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("Starting rpcbind failed with error: %v, output: %s", err, out)
+			}
+		}
+
 		cmd = exec.Command("/usr/sbin/rpc.statd", "--port", "662")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("rpc.statd failed with error: %v, output: %s", err, out)
@@ -101,7 +96,7 @@ func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool, enableNFSv3 
 	}
 
 	// Start dbus, needed for ganesha dynamic exports
-	cmd = exec.Command("dbus-daemon", "--system", "--nopidfile")
+	cmd := exec.Command("dbus-daemon", "--system", "--nopidfile")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("dbus-daemon failed with error: %v, output: %s", err, out)
 	}
@@ -140,32 +135,36 @@ func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool, enableNFSv3 
 	return nil
 }
 
-// setNFSProtocols pins which NFS protocol versions ganesha serves, by writing
-// (or clearing) an NFS_Protocols line in the NFS_Core_Param block of the
-// persisted ganesha config. This must run on every startup, not just when the
-// config is first created, because the config lives on a persisted volume and
-// the desired protocol set is governed by the -enable-nfs-v3 flag, which can
-// differ from when the file was written.
+// setNFSProtocols pins ganesha's NFSv4-only mode in NFS_Core_Param. This must
+// run on every startup, not just when the config is first created, because the
+// config lives on a persisted volume and the desired mode is governed by the
+// -enable-nfs-v3 flag, which can differ from when the file was written.
 //
-// When NFSv3 is disabled we set "NFS_Protocols = 4;" so ganesha registers and
-// serves only NFSv4. Leaving v3 enabled (the default) makes ganesha also try
-// to register the v3/mount/NLM programs with the portmapper. When NFSv3 is
-// enabled we remove any line we previously added, restoring ganesha's default
-// (3,4) protocol set.
+// When NFSv3 is disabled we set:
+//   - NFS_Protocols = 4   — serve only NFSv4 (no v3/mount/NLM registration)
+//   - Enable_UDP = false    — no UDP listeners or UDP portmapper registration
+//   - Enable_RQUOTA = false — skip RQUOTA registration (fatal without rpcbind)
+//
+// Ganesha treats NFSv4 portmapper registration as optional; v3 and RQUOTA
+// registration are fatal. With the above, rpcbind is not needed. When NFSv3 is
+// enabled we remove any lines we previously added, restoring ganesha defaults.
 func setNFSProtocols(ganeshaConfig string, enableNFSv3 bool) error {
 	read, err := ioutil.ReadFile(ganeshaConfig)
 	if err != nil {
 		return err
 	}
 
-	re := regexp.MustCompile(`(?m)^\s*NFS_Protocols = [0-9,]+;\n`)
-	stripped := re.ReplaceAll(read, []byte(""))
+	v4OnlyLine := regexp.MustCompile(`(?m)^\s*(NFS_Protocols|Enable_UDP|Enable_RQUOTA) = [^;]+;\n`)
+	stripped := v4OnlyLine.ReplaceAll(read, []byte(""))
 
 	if !enableNFSv3 {
-		// Insert "NFS_Protocols = 4;" as the first line inside NFS_Core_Param.
 		blockRe := regexp.MustCompile(`(?m)^(NFS_Core_Param\s*\n{\n)`)
 		if blockRe.Match(stripped) {
-			stripped = blockRe.ReplaceAll(stripped, []byte("${1}\tNFS_Protocols = 4;\n"))
+			stripped = blockRe.ReplaceAll(stripped, []byte(
+				"${1}\tNFS_Protocols = 4;\n" +
+					"\tEnable_UDP = false;\n" +
+					"\tEnable_RQUOTA = false;\n",
+			))
 		}
 	}
 

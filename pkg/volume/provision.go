@@ -169,10 +169,10 @@ type nfsProvisioner struct {
 
 	// Whether the NFS server exposes the NFSv3 protocol and its ancillary
 	// services (rpcbind, statd, mountd, nlockmgr, rquotad). When false the
-	// server is NFSv4-only: only port 2049/TCP is required, so the Service may
-	// be trimmed to that single port. When resolving the server IP from its own
-	// Service, getServer validates the Service endpoints against this reduced
-	// port set instead of the full v3 set.
+	// server is NFSv4-only: only port 2049/TCP is required (no rpcbind), so
+	// the Service may be trimmed to that single port. When resolving the server
+	// IP from its own Service, getServer validates the Service endpoints
+	// against this reduced port set instead of the full v3 set.
 	enableNFSv3 bool
 
 	// Identity of this nfsProvisioner, generated & persisted to exportDir or

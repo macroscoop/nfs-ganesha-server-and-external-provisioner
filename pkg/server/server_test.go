@@ -28,31 +28,33 @@ func TestSetNFSProtocols(t *testing.T) {
 		name        string
 		input       string
 		enableNFSv3 bool
-		wantCount   int // expected number of "NFS_Protocols = 4;" occurrences
+		wantV4Only  bool
 	}{
 		{
-			name:        "v4-only adds the directive to a default config",
+			name:        "v4-only adds directives to a default config",
 			input:       string(defaultGaneshaConfigContents),
 			enableNFSv3: false,
-			wantCount:   1,
+			wantV4Only:  true,
 		},
 		{
 			name:        "v3 enabled leaves a default config untouched",
 			input:       string(defaultGaneshaConfigContents),
 			enableNFSv3: true,
-			wantCount:   0,
+			wantV4Only:  false,
 		},
 		{
-			name:        "v4-only is idempotent (no duplicate on re-run)",
-			input:       "NFS_Core_Param\n{\n\tNFS_Protocols = 4;\n\tMNT_Port = 20048;\n}\n",
+			name: "v4-only is idempotent (no duplicate on re-run)",
+			input: "NFS_Core_Param\n{\n\tNFS_Protocols = 4;\n\tEnable_UDP = false;\n" +
+				"\tEnable_RQUOTA = false;\n\tMNT_Port = 20048;\n}\n",
 			enableNFSv3: false,
-			wantCount:   1,
+			wantV4Only:  true,
 		},
 		{
-			name:        "toggling back to v3 removes a previously added directive",
-			input:       "NFS_Core_Param\n{\n\tNFS_Protocols = 4;\n\tMNT_Port = 20048;\n}\n",
+			name: "toggling back to v3 removes previously added directives",
+			input: "NFS_Core_Param\n{\n\tNFS_Protocols = 4;\n\tEnable_UDP = false;\n" +
+				"\tEnable_RQUOTA = false;\n\tMNT_Port = 20048;\n}\n",
 			enableNFSv3: true,
-			wantCount:   0,
+			wantV4Only:  false,
 		},
 	}
 
@@ -71,12 +73,23 @@ func TestSetNFSProtocols(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading result: %v", err)
 			}
-			if got := strings.Count(string(out), "NFS_Protocols = 4;"); got != test.wantCount {
-				t.Errorf("NFS_Protocols=4 count = %d, want %d\nconfig:\n%s", got, test.wantCount, out)
+			outStr := string(out)
+			for _, line := range []string{
+				"NFS_Protocols = 4;",
+				"Enable_UDP = false;",
+				"Enable_RQUOTA = false;",
+			} {
+				got := strings.Count(outStr, line)
+				want := 0
+				if test.wantV4Only {
+					want = 1
+				}
+				if got != want {
+					t.Errorf("%q count = %d, want %d\nconfig:\n%s", line, got, want, outStr)
+				}
 			}
-			// When disabled, the directive must land inside the NFS_Core_Param block.
-			if !test.enableNFSv3 && !strings.Contains(string(out), "NFS_Core_Param") {
-				t.Errorf("NFS_Core_Param block missing from result:\n%s", out)
+			if test.wantV4Only && !strings.Contains(outStr, "NFS_Core_Param") {
+				t.Errorf("NFS_Core_Param block missing from result:\n%s", outStr)
 			}
 		})
 	}

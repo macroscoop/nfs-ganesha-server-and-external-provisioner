@@ -46,7 +46,7 @@ var (
 	maxExports     = flag.Int("max-exports", -1, "The maximum number of volumes to be exported by this provisioner. New claims will be ignored once this limit has been reached. A negative value is interpreted as 'unlimited'. Default -1.")
 	fsidDevice     = flag.Bool("device-based-fsids", true, "If file system handles created by NFS Ganesha should be based on major/minor device IDs of the backing storage volume ('/export'). Default true.")
 	leaderElection = flag.Bool("leader-elect", false, "Start a leader election client and gain leadership before executing the main loop. Enable this when running replicated components for high availability. Default false.")
-	enableNFSv3    = flag.Bool("enable-nfs-v3", true, "If the NFS server should expose the NFSv3 protocol and its ancillary services (rpcbind, statd, mountd, nlockmgr, rquotad). When false the server is NFSv4-only: the rpcbind and statd helpers are not started and the provisioner validates its own Service against just the single 2049/TCP port, so the Service may be trimmed to that one port. Default true.")
+	enableNFSv3    = flag.Bool("enable-nfs-v3", true, "If the NFS server should serve the NFSv3 protocol and its ancillary services (statd, mountd, nlockmgr, rquotad). When false the server is NFSv4-only: rpc.statd is not started, ganesha is configured with NFS_Protocols=4 so it serves only NFSv4, and the provisioner validates its own Service against just the single 2049/TCP port, so the Service may be trimmed to that one port. (rpcbind is always started -- ganesha requires the portmapper to register even NFSv4.) Default true.")
 )
 
 const (

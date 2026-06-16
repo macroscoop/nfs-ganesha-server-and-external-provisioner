@@ -18,6 +18,18 @@ extraArgs: {}
   # device-based-fsids: false
   # grace-period: 0
 
+# NFSv3 support. NFSv4 multiplexes everything over the single 2049 data port,
+# so the NFSv3 ancillary services (rpcbind, statd, mountd, nlockmgr, rquotad)
+# are only needed by v3 clients. Set enabled to false for an NFSv4-only server:
+# rpcbind/statd are not started, ganesha is pinned to v4 with no UDP listeners
+# or RQUOTA (no portmapper needed), the v3 container & Service ports are dropped
+# (leaving only 2049/TCP exposed), and the provisioner validates its Service
+# against just that single port (-enable-nfs-v3=false).
+# When disabling this, make sure clients mount with a v4 minor version, e.g.
+# storageClass.mountOptions: [vers=4.2].
+nfsV3:
+  enabled: true
+
 service:
   type: ClusterIP
 

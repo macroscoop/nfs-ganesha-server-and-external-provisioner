@@ -40,6 +40,7 @@ spec:
             - name: nfs
               containerPort: 2049
               protocol: TCP
+            {{- if .Values.nfsV3.enabled }}
             - name: nfs-udp
               containerPort: 2049
               protocol: UDP
@@ -73,12 +74,16 @@ spec:
             - name: statd-udp
               containerPort: 662
               protocol: UDP
+            {{- end }}
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           args:
             - "-provisioner={{ include "nfs-provisioner.provisionerName" . }}"
+            {{- if not .Values.nfsV3.enabled }}
+            - "-enable-nfs-v3=false"
+            {{- end }}
             {{- range $key, $value := .Values.extraArgs }}
             - "-{{ $key }}={{ $value }}"
             {{- end }}

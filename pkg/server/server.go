@@ -74,23 +74,29 @@ NFSV4
 
 // Setup sets up various prerequisites and settings for the server. If an error
 // is encountered at any point it returns it instantly
-func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool) error {
-	// Start rpcbind if it is not started yet
-	cmd := exec.Command("/usr/sbin/rpcinfo", "127.0.0.1")
-	if err := cmd.Run(); err != nil {
-		cmd = exec.Command("/usr/sbin/rpcbind", "-w")
+func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool, enableNFSv3 bool) error {
+	// rpcbind and rpc.statd only serve NFSv3 and its ancillary RPC programs.
+	// For NFSv4-only mode we skip both and pin ganesha to v4 with no UDP
+	// listeners and no RQUOTA (see setNFSProtocols), so ganesha never contacts
+	// the portmapper and clients need only 2049/TCP.
+	if enableNFSv3 {
+		// Start rpcbind if it is not started yet
+		cmd := exec.Command("/usr/sbin/rpcinfo", "127.0.0.1")
+		if err := cmd.Run(); err != nil {
+			cmd = exec.Command("/usr/sbin/rpcbind", "-w")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("Starting rpcbind failed with error: %v, output: %s", err, out)
+			}
+		}
+
+		cmd = exec.Command("/usr/sbin/rpc.statd", "--port", "662")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("Starting rpcbind failed with error: %v, output: %s", err, out)
+			return fmt.Errorf("rpc.statd failed with error: %v, output: %s", err, out)
 		}
 	}
 
-	cmd = exec.Command("/usr/sbin/rpc.statd", "--port", "662")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("rpc.statd failed with error: %v, output: %s", err, out)
-	}
-
 	// Start dbus, needed for ganesha dynamic exports
-	cmd = exec.Command("dbus-daemon", "--system", "--nopidfile")
+	cmd := exec.Command("dbus-daemon", "--system", "--nopidfile")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("dbus-daemon failed with error: %v, output: %s", err, out)
 	}
@@ -115,12 +121,54 @@ func Setup(ganeshaConfig string, gracePeriod uint, fsidDevice bool) error {
 	if err != nil {
 		return fmt.Errorf("error setting fsid device to ganesha config: %v", err)
 	}
-	err = setNlmPort(ganeshaConfig)
+	if enableNFSv3 {
+		err = setNlmPort(ganeshaConfig)
+		if err != nil {
+			return fmt.Errorf("error setting NLM port to ganesha config: %v", err)
+		}
+	}
+	err = setNFSProtocols(ganeshaConfig, enableNFSv3)
 	if err != nil {
-		return fmt.Errorf("error setting NLM port to ganesha config: %v", err)
+		return fmt.Errorf("error setting NFS protocols in ganesha config: %v", err)
 	}
 
 	return nil
+}
+
+// setNFSProtocols pins ganesha's NFSv4-only mode in NFS_Core_Param. This must
+// run on every startup, not just when the config is first created, because the
+// config lives on a persisted volume and the desired mode is governed by the
+// -enable-nfs-v3 flag, which can differ from when the file was written.
+//
+// When NFSv3 is disabled we set:
+//   - NFS_Protocols = 4   — serve only NFSv4 (no v3/mount/NLM registration)
+//   - Enable_UDP = false    — no UDP listeners or UDP portmapper registration
+//   - Enable_RQUOTA = false — skip RQUOTA registration (fatal without rpcbind)
+//
+// Ganesha treats NFSv4 portmapper registration as optional; v3 and RQUOTA
+// registration are fatal. With the above, rpcbind is not needed. When NFSv3 is
+// enabled we remove any lines we previously added, restoring ganesha defaults.
+func setNFSProtocols(ganeshaConfig string, enableNFSv3 bool) error {
+	read, err := ioutil.ReadFile(ganeshaConfig)
+	if err != nil {
+		return err
+	}
+
+	v4OnlyLine := regexp.MustCompile(`(?m)^\s*(NFS_Protocols|Enable_UDP|Enable_RQUOTA) = [^;]+;\n`)
+	stripped := v4OnlyLine.ReplaceAll(read, []byte(""))
+
+	if !enableNFSv3 {
+		blockRe := regexp.MustCompile(`(?m)^(NFS_Core_Param\s*\n{\n)`)
+		if blockRe.Match(stripped) {
+			stripped = blockRe.ReplaceAll(stripped, []byte(
+				"${1}\tNFS_Protocols = 4;\n" +
+					"\tEnable_UDP = false;\n" +
+					"\tEnable_RQUOTA = false;\n",
+			))
+		}
+	}
+
+	return ioutil.WriteFile(ganeshaConfig, stripped, 0600)
 }
 
 // Run : run the NFS server in the foreground until it exits

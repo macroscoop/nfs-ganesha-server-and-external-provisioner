@@ -1,0 +1,57 @@
+# Publish our fork's Helm chart as an OCI artifact to ghcr.io.
+#
+# Upstream publishes this chart to its gh-pages repo via chart-releaser
+# (helm-chart-release.yml, on push to master). Our fork carries chart changes
+# (the nfsV3.enabled toggle that renders an NFSv4-only, single-port Service and
+# auto-passes -enable-nfs-v3=false) on macroscoop/integration, not master, so
+# that workflow never publishes them. This workflow pushes the fork chart to
+# oci://ghcr.io/macroscoop/charts so deployments can `helm upgrade` it pinned by
+# --version, alongside the fork image already at ghcr.io/macroscoop/.
+#
+# Triggered on tag push (same tags that build the image) so one tag ships both.
+# The OCI artifact tag is the chart's Chart.yaml `version` (e.g. 1.9.0), which is
+# independent of the image tag that triggered the run; bump Chart.yaml when the
+# chart changes. workflow_dispatch is included for manual re-publishes, but note
+# GitHub only exposes it once this file reaches the default branch.
+#
+# PACKAGE VISIBILITY (one-time, after the first push): like the image package,
+# the ghcr chart package is created *private* by default. To let clusters pull it
+# anonymously (no imagePullSecret / no `helm registry login`):
+#   GitHub -> org `macroscoop` -> Packages -> charts/nfs-server-provisioner ->
+#   Package settings -> Danger Zone -> Change visibility -> Public
+
+name: Release Helm chart (OCI)
+
+# yamllint disable-line rule:truthy
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  chart:
+    if: github.repository == 'macroscoop/nfs-ganesha-server-and-external-provisioner'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package and push chart
+        run: |
+          helm package charts/nfs-server-provisioner -d /tmp/chart
+          helm push /tmp/chart/nfs-server-provisioner-*.tgz oci://ghcr.io/macroscoop/charts

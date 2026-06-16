@@ -74,6 +74,12 @@ clean so it can fast-forward from upstream. Releases are cut by tagging
 `v6.5-macroscoop.<N>` on the integration branch, which triggers both builds above
 (image tag `v6.5-macroscoop.<N>`, chart OCI tag taken from `Chart.yaml` version).
 
+Branch **`feature/nfsv4-only-mode`** holds just the NFSv4-only feature (item 1
+above) as a single, squashed, DCO-signed commit on top of `master`, **excluding**
+the fork-only root README and build-workflow changes (items 2–3). It's kept as a
+clean upstream-contribution candidate; it is not part of the release flow and is
+not currently proposed upstream.
+
 ---
 
 `nfs-ganesha-server-and-external-provisioner` is an out-of-tree dynamic provisioner for Kubernetes 1.14+. You can use it to quickly & easily deploy shared storage that works almost anywhere. Or it can help you write your own out-of-tree dynamic provisioner by serving as an example implementation of the requirements detailed in [the proposal](https://github.com/kubernetes/kubernetes/pull/30285). 

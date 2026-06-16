@@ -1,5 +1,81 @@
 # NFS Ganesha server and external provisioner
 
+> **This is the macroscoop fork.** It tracks upstream
+> [`kubernetes-sigs/nfs-ganesha-server-and-external-provisioner`](https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner)
+> and adds an NFSv4-only mode plus a fork-owned image/chart build. See
+> [Fork changes](#fork-changes-macroscoop) below. The rest of this README is
+> upstream's.
+
+## Fork changes (macroscoop)
+
+This fork diverges from upstream in three ways. None of it changes the default
+behaviour: with no extra flags the server still serves NFSv3 + NFSv4 exactly as
+upstream does.
+
+### 1. Optional NFSv4-only mode
+
+A new `-enable-nfs-v3` flag (default `true`) and matching chart value
+`nfsV3.enabled` let you run the server **NFSv4-only**. Set `nfsV3.enabled=false`
+(chart) or pass `-enable-nfs-v3=false` (binary) and:
+
+- ganesha is pinned to `NFS_Protocols = 4`, with `Enable_UDP = false` and
+  `Enable_RQUOTA = false`;
+- the NFSv3 ancillary daemons are not started at all — **no `rpcbind`, no
+  `rpc.statd`** — because with v3 and RQUOTA off ganesha needs no portmapper
+  (NFSv4 registration with rpcbind is optional and non-fatal);
+- the container and `Service` expose **only `2049/TCP`** instead of the full
+  12-port v3 set (rpcbind/mountd/nlockmgr/rquotad/statd over TCP+UDP);
+- the provisioner's server-IP self-check expects exactly `{2049/TCP}`, so the
+  trimmed Service is accepted rather than rejected.
+
+Why we did it:
+
+- **Less clutter** — one TCP port and one daemon instead of a fan of RPC
+  services and a portmapper, which is all most NFSv4 consumers ever need.
+- **Smaller attack surface** — no UDP listeners, no portmapper, and none of the
+  v3/MOUNT/NLM/NSM/RQUOTA RPC programs exposed.
+
+Clients must mount with a v4 minor version, e.g.
+`storageClass.mountOptions: [vers=4.2]`.
+
+### 2. Fork-owned image & chart build
+
+Upstream builds its provisioner image on Google Cloud Build and publishes its
+chart to a gh-pages Helm repo. This fork instead builds and publishes to
+**GitHub Container Registry under the `macroscoop` org**, on a git tag push
+([`.github/workflows/build-provisioner-image.yml`](.github/workflows/build-provisioner-image.yml)
+and [`release-chart.yml`](.github/workflows/release-chart.yml)):
+
+- a **multi-arch** (`amd64` + `arm64`) image at
+  `ghcr.io/macroscoop/nfs-server-provisioner`, built natively per-arch (no QEMU
+  emulation — each leg runs on its own native GitHub runner);
+- the Helm chart as an **OCI artifact** at
+  `oci://ghcr.io/macroscoop/charts/nfs-server-provisioner`.
+
+**We deliberately build fewer architectures than upstream.** Upstream's pipeline
+targets `linux/amd64`, `linux/arm64`, `linux/arm` (v7), `linux/ppc64le`,
+`linux/s390x` and several `windows/amd64` variants; this fork builds **only
+`linux/amd64` and `linux/arm64`** — the two our clusters run. Dropping `arm/v7`,
+`ppc64le`, `s390x` and Windows keeps the build native and fast (upstream notes
+its emulated non-amd64 legs can take ~1h each, hence its 6h timeout), at the cost
+of not shipping those platforms.
+
+This is convenient **for us** (our registry, our two architectures,
+version-pinnable artifacts) but is **not meant for general use**: the workflows
+are hard-wired to the `macroscoop` org and guarded with
+`if: github.repository == 'macroscoop/...'`, so they no-op anywhere else, and the
+reduced architecture set would regress anyone needing the dropped platforms. It's
+deliberately not proposed upstream as-is.
+
+### 3. The `macroscoop/integration` branch
+
+Fork work lives on **`macroscoop/integration`**, not `master` — `master` is kept
+clean so it can fast-forward from upstream. Releases are cut by tagging
+`v6.5-macroscoop.<N>` on the integration branch, which triggers both builds above
+(image tag `v6.5-macroscoop.<N>`, chart OCI tag taken from `Chart.yaml` version).
+
+---
+
 `nfs-ganesha-server-and-external-provisioner` is an out-of-tree dynamic provisioner for Kubernetes 1.14+. You can use it to quickly & easily deploy shared storage that works almost anywhere. Or it can help you write your own out-of-tree dynamic provisioner by serving as an example implementation of the requirements detailed in [the proposal](https://github.com/kubernetes/kubernetes/pull/30285). 
 
 It works just like in-tree dynamic provisioners: a `StorageClass` object can specify an instance of `nfs-ganesha-server-and-external-provisioner` to be its `provisioner` like it specifies in-tree provisioners such as GCE or AWS. Then, the instance of nfs-ganesha-server-and-external-provisioner will watch for `PersistentVolumeClaims` that ask for the `StorageClass` and automatically create NFS-backed `PersistentVolumes` for them. For more information on how dynamic provisioning works, see [the docs](http://kubernetes.io/docs/user-guide/persistent-volumes/) or [this blog post](http://blog.kubernetes.io/2016/10/dynamic-provisioning-and-storage-in-kubernetes.html).

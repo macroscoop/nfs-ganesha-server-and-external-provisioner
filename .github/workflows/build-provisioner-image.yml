@@ -1,0 +1,116 @@
+# Build the nfs-provisioner runtime image for our fork.
+#
+# Upstream builds the provisioner image on Google Cloud Build
+# (release-tools/cloudbuild.yaml, targeting gcr.io/k8s-staging-sig-storage); the
+# in-repo GitHub workflows only build the nfs-ganesha *base* image. This adds a
+# fork-owned workflow that builds + pushes the *provisioner* image to ghcr.io.
+#
+# Pattern mirrors our frePPLe fork (feat/multi-arch-image): build natively on a
+# per-architecture runner (no QEMU emulation), push an arch-specific tag, then
+# stitch the tags into one multi-arch manifest with `docker buildx imagetools`.
+# On a native runner the existing non-multi-stage deploy/docker/Dockerfile is
+# all we need -- the locally built binary is already the right arch and the
+# nfs-ganesha base resolves to the matching-arch variant automatically.
+#
+# NOTE: the linux/arm64 leg uses GitHub's `ubuntu-24.04-arm` hosted runner
+# (free for public repos; plan-dependent for private). If those runners are not
+# available to this org, switch that matrix leg to QEMU+buildx instead.
+#
+# PACKAGE VISIBILITY (one-time, after the first push): the ghcr package is
+# created *private* by default (it inherits the fork repo's visibility), so the
+# clusters would need an imagePullSecret to pull it. This image is just a build
+# of the Apache-2.0 upstream plus our patch -- no secrets -- so make the package
+# PUBLIC once and the clusters pull it anonymously with no pull secret:
+#   GitHub -> org `macroscoop` -> Packages -> nfs-server-provisioner ->
+#   Package settings -> Danger Zone -> Change visibility -> Public
+# The setting persists across all subsequent pushes; it only has to be done once.
+# (If the org disallows public packages, fall back to a read-only `read:packages`
+# PAT wired as a docker-registry imagePullSecret in the nfs-provisioner namespace.)
+
+name: Build provisioner image (multi-arch)
+
+# yamllint disable-line rule:truthy
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/macroscoop/nfs-server-provisioner
+
+jobs:
+  # Build + push one image per architecture, natively, under an arch-suffixed tag.
+  docker:
+    if: github.repository == 'macroscoop/nfs-ganesha-server-and-external-provisioner'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build the provisioner binary (native arch)
+        run: |
+          CGO_ENABLED=0 go build -o deploy/docker/nfs-provisioner ./cmd/nfs-provisioner
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push architecture-specific image
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="${GITHUB_REF#refs/tags/}"
+          else
+            version="sha-${GITHUB_SHA::7}"
+          fi
+          arch="${{ matrix.platform }}"; arch="${arch#linux/}"
+          docker build -t "$IMAGE:$version-$arch" deploy/docker
+          docker push "$IMAGE:$version-$arch"
+
+  # Stitch the per-arch tags into a single multi-arch manifest (:<version> [+ :latest on tags]).
+  merge:
+    needs: docker
+    if: github.repository == 'macroscoop/nfs-ganesha-server-and-external-provisioner'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push the multi-arch manifest
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="${GITHUB_REF#refs/tags/}"
+            tags=(--tag "$IMAGE:$version" --tag "$IMAGE:latest")
+          else
+            version="sha-${GITHUB_SHA::7}"
+            tags=(--tag "$IMAGE:$version")
+          fi
+          docker buildx imagetools create \
+            "${tags[@]}" \
+            "$IMAGE:$version-amd64" \
+            "$IMAGE:$version-arm64"
+          docker buildx imagetools inspect "$IMAGE:$version"
